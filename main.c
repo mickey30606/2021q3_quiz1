@@ -5,6 +5,8 @@
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 
+#define DEBUG 0
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
 
@@ -124,8 +126,10 @@ static int unhide_process(pid_t pid)
 {
     pid_node_t *proc, *tmp_proc;
     list_for_each_entry_safe (proc, tmp_proc, &hidden_proc, list_node) {
-        list_del(&proc->list_node);
-        kfree(proc);
+        if(proc->id == pid){
+            list_del(&proc->list_node);
+            kfree(proc);
+        }
     }
     return SUCCESS;
 }
@@ -230,6 +234,18 @@ static int _hideproc_init(void)
 static void _hideproc_exit(void)
 {
     int dev_major;
+    pid_node_t *proc, *tmp_proc;
+
+    list_for_each_entry_safe (proc, tmp_proc, &hidden_proc, list_node) {
+        list_del(&proc->list_node);
+        kfree(proc);
+    }
+#if DEBUG
+    if(list_empty(&hidden_proc))
+        pr_info("list all clear\n");
+    else
+        pr_info("list is not clear\n");
+#endif
     dev_major = MAJOR(dev);
     device_destroy(hideproc_class, MKDEV(dev_major, MINOR_VERSION));
     cdev_del(&cdev);
