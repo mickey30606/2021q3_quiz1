@@ -4,6 +4,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
+#include <linux/pid.h>
 
 #define DEBUG 0
 
@@ -77,6 +78,7 @@ void hook_remove(struct ftrace_hook *hook)
 
 typedef struct {
     pid_t id;
+    pid_t parent;
     struct list_head list_node;
 } pid_node_t;
 
@@ -114,11 +116,50 @@ static void init_hook(void)
     hook_install(&hook);
 }
 
+static int travel_all_add_node(struct task_struct *origin, pid_t parent){
+    pid_node_t *proc;
+    struct task_struct *task_tmp;
+    bool new_node = 1;
+    list_for_each_entry(proc, &hidden_proc, list_node){
+        if(proc->id == origin->tgid){
+            new_node = 0;
+            break;
+        }
+    }
+    if(new_node){
+        proc = kmalloc(sizeof(pid_node_t), GFP_KERNEL);
+        proc->id = origin->tgid;
+        proc->parent = parent;
+        list_add_tail(&proc->list_node, &hidden_proc);
+    }
+
+    //travel
+    if(!list_empty(&origin->children)){
+        list_for_each_entry(task_tmp, &origin->children, sibling){
+            travel_all_add_node(task_tmp, origin->tgid);
+        }
+    }
+
+    return SUCCESS;
+}
+
 static int hide_process(pid_t pid)
 {
-    pid_node_t *proc = kmalloc(sizeof(pid_node_t), GFP_KERNEL);
-    proc->id = pid;
-    list_add_tail(&proc->list_node, &hidden_proc);
+    struct pid *tmp;
+    struct task_struct *origin;
+    tmp = find_get_pid(pid);
+    if(!tmp){
+        pr_info("no process number %d, hide process failed.\n", pid);
+        return 0;
+    }
+    origin = pid_task(tmp, PIDTYPE_PID);
+    if(origin){
+        if(origin->real_parent){
+            travel_all_add_node(origin, origin->real_parent->tgid);
+        }
+    }else{
+        pr_info("NO origin\n");
+    }
     return SUCCESS;
 }
 
@@ -129,13 +170,16 @@ static int unhide_process(pid_t pid)
         if(proc->id == pid){
             list_del(&proc->list_node);
             kfree(proc);
+        }else if(proc->parent == pid){
+            unhide_process(proc->id);
+            tmp_proc = list_entry(hidden_proc.next, pid_node_t, list_node);
         }
     }
     return SUCCESS;
 }
 
-#define OUTPUT_BUFFER_FORMAT "pid: %d\n"
-#define MAX_MESSAGE_SIZE (sizeof(OUTPUT_BUFFER_FORMAT) + 4)
+#define OUTPUT_BUFFER_FORMAT "parent pid: %d pid: %d\n"
+#define MAX_MESSAGE_SIZE (sizeof(OUTPUT_BUFFER_FORMAT) + 10)
 
 static int device_open(struct inode *inode, struct file *file)
 {
@@ -159,7 +203,7 @@ static ssize_t device_read(struct file *filep,
 
     list_for_each_entry_safe (proc, tmp_proc, &hidden_proc, list_node) {
         memset(message, 0, MAX_MESSAGE_SIZE);
-        sprintf(message, OUTPUT_BUFFER_FORMAT, proc->id);
+        sprintf(message, OUTPUT_BUFFER_FORMAT, proc->parent, proc->id);
         copy_to_user(buffer + *offset, message, strlen(message));
         *offset += strlen(message);
     }
@@ -172,7 +216,8 @@ static ssize_t device_write(struct file *filep,
                             loff_t *offset)
 {
     long pid;
-    char *message;
+    char *message, *cut;
+    int length;
 
     char add_message[] = "add", del_message[] = "del";
     if (len < sizeof(add_message) - 1 && len < sizeof(del_message) - 1)
@@ -182,11 +227,11 @@ static ssize_t device_write(struct file *filep,
     memset(message, 0, len + 1);
     copy_from_user(message, buffer, len);
     if (!memcmp(message, add_message, sizeof(add_message) - 1)) {
-        kstrtol(message + sizeof(add_message), 10, &pid);
-        hide_process(pid);
+        for(cut = message + sizeof(add_message);sscanf(cut, "%ld%n", &pid, &length) == 1; cut += length)
+            hide_process(pid);
     } else if (!memcmp(message, del_message, sizeof(del_message) - 1)) {
-        kstrtol(message + sizeof(del_message), 10, &pid);
-        unhide_process(pid);
+        for(cut = message + sizeof(del_message);sscanf(cut, "%ld%n", &pid, &length) == 1; cut += length)
+            unhide_process(pid);
     } else {
         kfree(message);
         return -EAGAIN;
